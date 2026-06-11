@@ -207,8 +207,7 @@ select,input,button{font-family:var(--sans);font-size:16px}
 <div id="screen-app" class="screen">
   <div class="header">
     <div class="h-left">
-      <span class="badge">⚙️ ENG</span>
-      <span class="h-title">Bolão 2026 <span>· HSystem</span></span>
+      <span class="h-title" style="font-size:.95rem">⚽ Bolão Copa 2026 <span>· Engenharia</span></span>
     </div>
     <div class="user-chip">
       <div class="avatar" id="u-avatar">?</div>
@@ -314,6 +313,11 @@ select,input,button{font-family:var(--sans);font-size:16px}
     <!-- RESUMO -->
     <div class="page" id="page-resumo">
       <div class="alert ag">✅ <span>Palpite <strong>oficial do time</strong> calculado pela maioria. Capitão: é o que você envia ao organizador.</span></div>
+      <div style="margin-bottom:14px">
+        <button class="btn bg" onclick="exportPDF()" id="btn-pdf" style="width:100%;font-size:.95rem;padding:14px;display:flex;align-items:center;justify-content:center;gap:8px">
+          <span>📄</span><span>Exportar palpite oficial (PDF)</span>
+        </button>
+      </div>
       <div id="resumo"></div>
     </div>
 
@@ -772,22 +776,64 @@ async function refreshGrupos() {
   }).join('');
 }
 
+// Majority for palpitao top4 — no country can repeat across positions
+function majorityPalpitao(all) {
+  const usedCountries = new Set();
+  return PALP_FIELDS.map(f => {
+    const vals = (all||[]).map(r=>r[f.k]).filter(Boolean);
+    if (!vals.length) return { field: f, winner: null, all: [] };
+    // artilheiro: no dedup needed (it's a player, not a country)
+    if (f.k === 'artilheiro') {
+      const m = majority(vals);
+      return { field: f, winner: m?.winner||null, all: m?.all||[] };
+    }
+    const freq = {};
+    vals.forEach(v => { freq[v]=(freq[v]||0)+1; });
+    const sorted = Object.entries(freq).sort((a,b)=>b[1]-a[1]);
+    const pick = sorted.find(([country]) => !usedCountries.has(country));
+    if (pick) {
+      usedCountries.add(pick[0]);
+      return { field: f, winner: pick[0], all: sorted };
+    }
+    return { field: f, winner: null, all: sorted };
+  });
+}
+
+// Majority for palpitao top4 — no country repeats across positions
+function majorityPalpitao(all) {
+  const usedCountries = new Set();
+  return PALP_FIELDS.map(f => {
+    const vals = (all||[]).map(r=>r[f.k]).filter(Boolean);
+    if (!vals.length) return { field: f, winner: null, all: [] };
+    if (f.k === 'artilheiro') {
+      const m = majority(vals);
+      return { field: f, winner: m?.winner||null, all: m?.all||[] };
+    }
+    const freq = {};
+    vals.forEach(v => { freq[v]=(freq[v]||0)+1; });
+    const sorted = Object.entries(freq).sort((a,b)=>b[1]-a[1]);
+    const pick = sorted.find(([country]) => !usedCountries.has(country));
+    if (pick) { usedCountries.add(pick[0]); return { field: f, winner: pick[0], all: sorted }; }
+    return { field: f, winner: null, all: sorted };
+  });
+}
+
 async function refreshPalpitao() {
   const {data:all} = await db.from('bolao_palpitao').select('*');
   const el = document.getElementById('palpitao-con');
   if (!all?.length) { el.innerHTML='<div style="color:var(--muted);font-size:.84rem">Nenhum palpite ainda.</div>'; return; }
-  el.innerHTML = PALP_FIELDS.map(f=>{
-    const vals=(all||[]).map(r=>r[f.k]).filter(Boolean);
-    const m=majority(vals);
-    return `<div class="palp-row">
+  const results = majorityPalpitao(all);
+  el.innerHTML = results.map(({field:f, winner, all:votes})=>`
+    <div class="palp-row">
       <div class="palp-lbl">${f.label} <span class="palp-pts">${f.pts}</span></div>
       <div style="flex:1">
-        ${m?`<div style="font-weight:700;color:var(--green);font-size:.93rem;margin-bottom:4px">${m.winner}</div><div class="votes">${m.all.map(([k,v])=>`<span class="vc${k===m.winner?' w':''}">${k} (${v})</span>`).join('')}</div>`:`<span style="color:var(--muted);font-size:.84rem">sem votos</span>`}
+        ${winner
+          ? `<div style="font-weight:700;color:var(--green);font-size:.93rem;margin-bottom:4px">${winner}</div>
+             <div class="votes">${votes.map(([k,v])=>`<span class="vc${k===winner?' w':''}">${k} (${v})</span>`).join('')}</div>`
+          : `<span style="color:var(--muted);font-size:.84rem">sem votos</span>`}
       </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 }
-
 async function refreshAll() {
   await refreshBrasil();
   await refreshGrupos();
@@ -863,12 +909,12 @@ async function renderResumo() {
   html += mobileCards('🔮 Palpitão', pVoteStr,
     mems,
     m=>{const d=(palpAll||[]).find(r=>r.member_name===m);return PALP_FIELDS.map(f=>({lbl:f.label,val:d?.[f.k]||''}))},
-    PALP_FIELDS.map(f=>{const v=(palpAll||[]).map(r=>r[f.k]).filter(Boolean);const m=majority(v);return{lbl:f.label,val:m?m.winner:''}})
+    majorityPalpitao(palpAll||[]).map(({field:f,winner})=>({lbl:f.label,val:winner||''}))
   );
   html += desktopTable('🔮 Palpitão — Top 4 + Artilheiro', pVoteStr,
     PALP_FIELDS.map(f=>f.label),
     m=>{const d=(palpAll||[]).find(r=>r.member_name===m);return PALP_FIELDS.map(f=>d&&d[f.k]?`<td style="font-weight:600">${d[f.k]}</td>`:'<td class="sc empty">—</td>').join('')},
-    PALP_FIELDS.map(f=>{const v=(palpAll||[]).map(r=>r[f.k]).filter(Boolean);const m=majority(v);return m?`<td style="font-weight:700;color:var(--green)">${m.winner}</td>`:'<td class="sc empty">—</td>'}).join('')
+    majorityPalpitao(palpAll||[]).map(({field:f,winner})=>winner?`<td style="font-weight:700;color:var(--green)">${winner}</td>`:'<td class="sc empty">—</td>').join('')
   );
 
   // ── Grupos ──
@@ -911,6 +957,173 @@ async function renderResumo() {
 
   el.innerHTML = html || '<div style="color:var(--muted);text-align:center;padding:40px">Nenhum palpite ainda.</div>';
 }
+// ═══════════════════════════════════════════════════
+// EXPORT PDF
+// ═══════════════════════════════════════════════════
+async function exportPDF() {
+  const btn = document.getElementById('btn-pdf');
+  btn.disabled = true;
+  btn.innerHTML = '<span>⏳</span><span>Gerando PDF...</span>';
+
+  // Fetch all data
+  const {data:members}  = await db.from('bolao_members').select('name').order('created_at');
+  const {data:brasilAll}= await db.from('bolao_brasil').select('*');
+  const {data:gruposAll}= await db.from('bolao_grupos').select('*');
+  const {data:palpAll}  = await db.from('bolao_palpitao').select('*');
+  const {data:mmMatches}= await db.from('bolao_mm_matches').select('*').order('created_at');
+  const {data:mmPalp}   = await db.from('bolao_mm_palpites').select('*');
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('pt-BR', {day:'2-digit',month:'2-digit',year:'numeric'});
+  const timeStr = now.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+  const mems = (members||[]).map(r=>r.name);
+
+  // ── Build palpitao official ──
+  const palpOfficial = majorityPalpitao(palpAll||[]);
+
+  // ── Build grupos official ──
+  const grpKeys = Object.keys(GROUPS);
+
+  // ── Build brasil official ──
+  const brasilOfficial = BRASIL_GAMES.map(g => {
+    const scores = (brasilAll||[]).filter(r=>r.game_id===g.id).map(r=>`${r.score_home}×${r.score_away}`);
+    const m = majority(scores);
+    return { ...g, score: m?.winner || '—' };
+  });
+
+  // ── Build mata-mata official ──
+  const mmByFase = {};
+  (mmMatches||[]).forEach(m=>{ if(!mmByFase[m.fase]) mmByFase[m.fase]=[]; mmByFase[m.fase].push(m); });
+
+  // ── CSS ──
+  const css = `
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; background: #fff; color: #111; padding: 32px; font-size: 13px; }
+    .header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; padding-bottom: 16px; border-bottom: 3px solid #00b050; }
+    .header-left h1 { font-size: 22px; font-weight: 800; color: #00b050; margin-bottom: 4px; }
+    .header-left p { color: #555; font-size: 12px; }
+    .header-right { text-align: right; font-size: 11px; color: #777; }
+    .header-right strong { display: block; font-size: 13px; color: #111; }
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #888; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 6px; }
+    .match-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .match-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; text-align: center; }
+    .match-card .teams { font-size: 11px; color: #555; margin-bottom: 4px; }
+    .match-card .score { font-size: 20px; font-weight: 800; color: #00b050; font-family: monospace; }
+    .match-card .date { font-size: 10px; color: #aaa; margin-top: 3px; }
+    .palp-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .palp-item { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px; }
+    .palp-item .icon { font-size: 16px; }
+    .palp-item .lbl { font-size: 10px; color: #888; margin-bottom: 2px; }
+    .palp-item .val { font-size: 14px; font-weight: 700; color: #111; }
+    .grp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .grp-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; }
+    .grp-card .grp-name { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #888; margin-bottom: 6px; }
+    .grp-card .pos { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11px; }
+    .grp-card .pos .n { width: 14px; font-size: 9px; font-weight: 700; color: #aaa; flex-shrink: 0; }
+    .grp-card .pos .n.p1 { color: #f59e0b; }
+    .grp-card .pos .n.p2 { color: #9ca3af; }
+    .grp-card .pos .n.p3 { color: #cd7f32; }
+    .mm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .mm-item { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mm-item .team { font-size: 11px; font-weight: 600; }
+    .mm-item .sc { font-size: 16px; font-weight: 800; color: #00b050; font-family: monospace; white-space: nowrap; }
+    .footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid #eee; text-align: center; font-size: 10px; color: #aaa; }
+    .voters { font-size: 10px; color: #aaa; margin-left: auto; }
+    .fase-label { font-size: 10px; font-weight: 700; color: #555; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .05em; }
+  `;
+
+  // ── Build HTML content ──
+  const brasilVoters = new Set((brasilAll||[]).map(r=>r.member_name)).size;
+  const palpVoters = (palpAll||[]).length;
+  const gruposVoters = new Set((gruposAll||[]).map(r=>r.member_name)).size;
+
+  let body = `
+    <div class="header">
+      <div class="header-left">
+        <h1>⚽ Bolão Copa 2026</h1>
+        <p>Time de Engenharia · HSystem · Palpite Oficial</p>
+      </div>
+      <div class="header-right">
+        <strong>Gerado em ${dateStr} às ${timeStr}</strong>
+        Capitão: Dieseri Mello<br>
+        ${mems.length} participantes
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">⚽ Jogos do Brasil — Grupo C <span class="voters">${brasilVoters}/${mems.length} votaram</span></div>
+      <div class="match-grid">
+        ${brasilOfficial.map(g=>`
+          <div class="match-card">
+            <div class="teams">Brasil × ${g.opponent}</div>
+            <div class="score">${g.score}</div>
+            <div class="date">${g.date}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">🔮 Palpitão — Top 4 + Artilheiro <span class="voters">${palpVoters}/${mems.length} votaram</span></div>
+      <div class="palp-grid">
+        ${palpOfficial.map(({field:f, winner})=>`
+          <div class="palp-item">
+            <div class="icon">${f.label.split(' ')[0]}</div>
+            <div><div class="lbl">${f.label.replace(/^[^ ]+ /,'')}</div><div class="val">${winner||'—'}</div></div>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📊 Classificação dos Grupos <span class="voters">${gruposVoters}/${mems.length} votaram</span></div>
+      <div class="grp-grid">
+        ${grpKeys.map(grp=>{
+          const positions = majorityGrupo(gruposAll||[], grp);
+          const posLbl=['1º','2º','3º','4º'], posCls=['p1','p2','p3',''];
+          return `<div class="grp-card">
+            <div class="grp-name">Grupo ${grp}</div>
+            ${positions.map((p,i)=>`<div class="pos"><span class="n ${posCls[i]}">${posLbl[i]}</span>${p?p.winner:'—'}</div>`).join('')}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+
+  // Mata-mata
+  const mmFasesComVotos = FASE_ORDER.filter(f=>mmByFase[f]);
+  if (mmFasesComVotos.length) {
+    const mmVoters = new Set((mmPalp||[]).map(r=>r.member_name)).size;
+    body += `<div class="section"><div class="section-title">🏆 Mata-mata <span class="voters">${mmVoters}/${mems.length} votaram</span></div>`;
+    mmFasesComVotos.forEach(fase => {
+      const fMs = mmByFase[fase];
+      body += `<div class="fase-label">${FASE_LABELS[fase]}</div><div class="mm-grid">`;
+      fMs.forEach(m => {
+        const scores = (mmPalp||[]).filter(p=>p.match_id===m.id).map(p=>`${p.score_home}×${p.score_away}`);
+        const maj = majority(scores);
+        body += `<div class="mm-item">
+          <span class="team">${m.home_team}</span>
+          <span class="sc">${maj?.winner||'—'}</span>
+          <span class="team" style="text-align:right">${m.away_team}</span>
+        </div>`;
+      });
+      body += '</div>';
+    });
+    body += '</div>';
+  }
+
+  body += `<div class="footer">Bolão Copa 2026 · Time de Engenharia HSystem · Gerado automaticamente em ${dateStr} às ${timeStr}</div>`;
+
+  // ── Open print window ──
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Palpite Oficial — Engenharia HSystem</title><style>${css}</style></head><body>${body}</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); }, 600);
+
+  btn.disabled = false;
+  btn.innerHTML = '<span>📄</span><span>Exportar palpite oficial (PDF)</span>';
+}
+
 // ═══════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════
