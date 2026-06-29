@@ -248,7 +248,8 @@ select,input,button{font-family:var(--sans);font-size:16px}
     <!-- GRUPOS -->
     <div class="page" id="page-grupos">
       <div class="alert aw">⏰ <span>Prazo: <strong>antes da Copa começar</strong> (11/jun). Classifique os 12 grupos.</span></div>
-      <div class="alert ai">💡 <span><strong>Acerto simples:</strong> seleção avançou = 2 pts · <strong>Posição exata</strong> = 4 pts.</span></div>
+      <div class="alert ai">💡 <span><strong>Formato:</strong> 1º e 2º de cada grupo avançam automaticamente. Os <strong>8 melhores 3ºs</strong> (entre os 12 grupos) também avançam. O 4º lugar está sempre eliminado.</span></div>
+      <div class="alert ai">🏆 <span><strong>Pontuação:</strong> seleção avançou = 2 pts · posição exata = 4 pts.</span></div>
       <div class="card">
         <div class="sec-label">Seus palpites — classificação dos grupos</div>
         <div class="grp-grid" id="grupos-form"></div>
@@ -463,17 +464,18 @@ function buildBrasilForm() {
 
 function buildGruposForm(savedData) {
   const el = document.getElementById('grupos-form');
-  const posLbl = ['1º','2º','3º','4º'];
+  const posLbl = ['1º','2º','3º *','4º'];
   const posCls = ['p1','p2','p3',''];
+  const posHint = ['Avança','Avança','Pode avançar (top 8)','Eliminado'];
   el.innerHTML = Object.entries(GROUPS).map(([grp,teams])=>`
     <div class="grp-card">
       <div class="grp-hd"><span class="g-badge">${grp}</span> Grupo ${grp}</div>
       ${[0,1,2,3].map(i=>`
-        <div class="pos-row">
+        <div class="pos-row" title="${posHint[i]}">
           <span class="pos-n ${posCls[i]}">${posLbl[i]}</span>
           <select class="sel sb" id="g${grp}${i}" data-grp="${grp}" data-pos="${i}"
             onchange="syncGrupoSelects('${grp}')"
-            style="font-size:.8rem;padding:6px 26px 6px 8px">
+            style="font-size:.8rem;padding:6px 26px 6px 8px${i===3?';opacity:.5':''}">
             <option value="">— País —</option>
             ${teams.map(t=>`<option value="${t}">${t}</option>`).join('')}
           </select>
@@ -486,10 +488,8 @@ function syncGrupoSelects(grp) {
   const teams = GROUPS[grp];
   const sels = [0,1,2,3].map(i => document.getElementById(`g${grp}${i}`));
   const chosen = sels.map(s => s.value);
-
   sels.forEach((sel, i) => {
     const current = sel.value;
-    // rebuild options: show all, disable those chosen by other positions
     sel.innerHTML = '<option value="">— País —</option>' +
       teams.map(t => {
         const usedElsewhere = chosen.some((v, j) => j !== i && v === t);
@@ -530,14 +530,16 @@ async function loadMyData() {
   });
   // Grupos
   const {data:gd} = await db.from('bolao_grupos').select('*').eq('member_name', ME);
-  (gd||[]).forEach(r => {
-    ['pos_1','pos_2','pos_3','pos_4'].forEach((p,i)=>{
-      const el = document.getElementById(`g${r.group_key}${i}`);
-      if(el && r[p]) el.value = r[p];
+  if (gd?.length) {
+    gd.forEach(r => {
+      ['pos_1','pos_2','pos_3','pos_4'].forEach((p,i)=>{
+        const el = document.getElementById(`g${r.group_key}${i}`);
+        if(el && r[p]) el.value = r[p];
+      });
+      syncGrupoSelects(r.group_key);
     });
-    syncGrupoSelects(r.group_key);
     markDone('grupos');
-  });
+  }
   // Palpitão
   const {data:pd} = await db.from('bolao_palpitao').select('*').eq('member_name', ME).single();
   if (pd) {
@@ -620,15 +622,36 @@ async function removeMMMatch(id) {
 async function saveMMFase(fase) {
   const {data:matches} = await db.from('bolao_mm_matches').select('*').eq('fase', fase);
   if (!matches?.length) return;
-  const rows = matches.map(m => ({
-    member_name: ME, match_id: m.id,
-    score_home: parseInt(document.getElementById(`mmh-${m.id}`)?.value)||0,
-    score_away: parseInt(document.getElementById(`mma-${m.id}`)?.value)||0,
-    updated_at: new Date().toISOString()
-  }));
+  const rows = matches.map(m => {
+    const h = parseInt(document.getElementById('mmh-'+m.id)?.value)||0;
+    const a = parseInt(document.getElementById('mma-'+m.id)?.value)||0;
+    const isTie = h === a;
+    const winner = isTie ? (document.getElementById('mmw-'+m.id)?.value||null) : null;
+    if (isTie && !winner) { toast('Defina quem passa nos jogos empatados!','err'); return null; }
+    return { member_name: ME, match_id: m.id, score_home: h, score_away: a, winner, updated_at: new Date().toISOString() };
+  });
+  if (rows.includes(null)) return;
   const {error} = await db.from('bolao_mm_palpites').upsert(rows, {onConflict:'member_name,match_id'});
   if (error) { toast('Erro ao salvar.','err'); return; }
   markDone('matamata'); await renderMMConsensus(); toast(`${FASE_LABELS[fase]} salvo!`);
+}
+
+function mmWinnerSelect(matchId, homeTeam, awayTeam, savedWinner) {
+  return `<div class="mm-winner-row" id="mmw-row-${matchId}" style="display:none;margin-top:6px;align-items:center;gap:6px;flex-wrap:wrap">
+    <span style="font-size:.7rem;color:var(--gold);font-weight:700">🔄 Empate — quem passa?</span>
+    <select class="sel sg" id="mmw-${matchId}" style="font-size:.8rem;padding:6px 24px 6px 8px;max-width:180px">
+      <option value="">— Selecione —</option>
+      <option value="${homeTeam}"${savedWinner===homeTeam?' selected':''}>${homeTeam}</option>
+      <option value="${awayTeam}"${savedWinner===awayTeam?' selected':''}>${awayTeam}</option>
+    </select>
+  </div>`;
+}
+
+function checkMMTie(matchId, homeTeam, awayTeam) {
+  const h = parseInt(document.getElementById('mmh-'+matchId)?.value)||0;
+  const a = parseInt(document.getElementById('mma-'+matchId)?.value)||0;
+  const row = document.getElementById('mmw-row-'+matchId);
+  if (row) row.style.display = (h===a) ? 'flex' : 'none';
 }
 
 async function renderMMList() {
@@ -653,14 +676,16 @@ async function renderMMList() {
     html += `<div class="card" style="margin-bottom:14px"><div class="sec-label">${FASE_LABELS[fase]}</div>`;
     byFase[fase].forEach(m => {
       const s = myMap[m.id];
+      const isTie = s && s.score_home === s.score_away;
       html += `<div class="match-row">
         <div class="team-bl"><div class="team-nm">${m.home_team}</div></div>
         <div class="match-mid">
           <div class="score-row">
-            <select class="score-sel" id="mmh-${m.id}">${scoreOpts(s?.score_home??0)}</select>
+            <select class="score-sel" id="mmh-${m.id}" onchange="checkMMTie('${m.id}','${m.home_team}','${m.away_team}')">${scoreOpts(s?.score_home??0)}</select>
             <span class="vs">×</span>
-            <select class="score-sel" id="mma-${m.id}">${scoreOpts(s?.score_away??0)}</select>
+            <select class="score-sel" id="mma-${m.id}" onchange="checkMMTie('${m.id}','${m.home_team}','${m.away_team}')">${scoreOpts(s?.score_away??0)}</select>
           </div>
+          ${mmWinnerSelect(m.id, m.home_team, m.away_team, s?.winner||'')}
           ${IS_CAP?`<button class="btn br btn-xs" style="margin-top:4px" onclick="removeMMMatch('${m.id}')">remover</button>`:''}
         </div>
         <div class="team-bl r"><div class="team-nm">${m.away_team}</div></div>
@@ -669,6 +694,14 @@ async function renderMMList() {
     html += `<div style="margin-top:12px"><button class="btn bg btn-sm" onclick="saveMMFase('${fase}')">✓ Salvar ${FASE_LABELS[fase]}</button></div></div>`;
   });
   container.innerHTML = html;
+  // Show tie selectors for already-tied scores
+  matches.forEach(m => {
+    const s = myMap[m.id];
+    if (s && s.score_home === s.score_away) {
+      const row = document.getElementById('mmw-row-'+m.id);
+      if (row) row.style.display = 'flex';
+    }
+  });
   await renderMMConsensus();
 }
 
@@ -685,12 +718,25 @@ async function renderMMConsensus() {
     if (!byFase[fase]) return;
     html += `<div style="margin-bottom:12px"><div style="font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:7px">${FASE_LABELS[fase]}</div>`;
     byFase[fase].forEach(m => {
-      const scores = (allPalp||[]).filter(p=>p.match_id===m.id).map(p=>`${p.score_home}×${p.score_away}`);
+      const palps = (allPalp||[]).filter(p=>p.match_id===m.id);
+      const scores = palps.map(p=>`${p.score_home}×${p.score_away}`);
       const maj = majority(scores);
+      // For tied consensus score, compute majority winner
+      let winnerLabel = '';
+      if (maj) {
+        const [h,a] = maj.winner.split('×').map(Number);
+        if (h === a) {
+          const winners = palps.filter(p=>p.score_home===h&&p.score_away===a&&p.winner).map(p=>p.winner);
+          const wMaj = majority(winners);
+          winnerLabel = wMaj ? `<div style="font-size:.72rem;color:var(--gold);font-weight:700;margin-top:3px">passa: ${wMaj.winner}</div>` : '';
+        }
+      }
       html += `<div class="con-match">
         <div style="font-weight:600;font-size:.86rem">${m.home_team}</div>
         <div style="text-align:center">
-          ${maj?`<div class="con-score">${maj.winner}</div><div class="votes">${maj.all.map(([k,v])=>`<span class="vc${k===maj.winner?' w':''}">${k}(${v})</span>`).join('')}</div>`:`<div class="con-score empty">sem votos</div>`}
+          ${maj
+            ? `<div class="con-score">${maj.winner}</div>${winnerLabel}<div class="votes">${maj.all.map(([k,v])=>`<span class="vc${k===maj.winner?' w':''}">${k}(${v})</span>`).join('')}</div>`
+            : `<div class="con-score empty">sem votos</div>`}
         </div>
         <div style="font-weight:600;font-size:.86rem;text-align:right">${m.away_team}</div>
       </div>`;
@@ -765,7 +811,9 @@ async function refreshGrupos() {
   const el = document.getElementById('grupos-con');
   if (!all?.length) { el.innerHTML='<div style="color:var(--muted);font-size:.84rem;grid-column:1/-1">Nenhum palpite ainda.</div>'; return; }
   const posLbl=['1º','2º','3º','4º'], posCls=['p1','p2','p3',''];
-  el.innerHTML = Object.entries(GROUPS).map(([grp])=>{
+
+  // Groups grid
+  const groupsHTML = Object.entries(GROUPS).map(([grp])=>{
     const positions = majorityGrupo(all, grp);
     const voterCount = new Set((all||[]).filter(r=>r.group_key===grp).map(r=>r.member_name)).size;
     const rows = posLbl.map((lbl,i)=>{
@@ -774,6 +822,35 @@ async function refreshGrupos() {
     }).join('');
     return `<div class="grp-card"><div class="grp-hd"><span class="g-badge">${grp}</span> Grupo ${grp}</div>${rows}</div>`;
   }).join('');
+
+  // Best 3rds ranking — count votes for each 3rd place across all groups and members
+  const thirdsFreq = {};
+  (all||[]).forEach(r => {
+    if (r.pos_3) thirdsFreq[r.pos_3] = (thirdsFreq[r.pos_3]||0) + 1;
+  });
+  const thirdsRanked = Object.entries(thirdsFreq).sort((a,b)=>b[1]-a[1]);
+  const totalVoters = new Set((all||[]).map(r=>r.member_name)).size;
+
+  const best3HTML = thirdsRanked.length === 0 ? '<span style="color:var(--muted);font-size:.82rem">Nenhum 3º preenchido ainda.</span>' :
+    thirdsRanked.map(([team, votes], idx) => {
+      const passes = idx < 8;
+      const pct = Math.round((votes / totalVoters) * 100);
+      return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)${idx===thirdsRanked.length-1?';border:none':''}">
+        <span style="font-family:var(--mono);font-size:.7rem;width:18px;color:${passes?'var(--green)':'var(--muted)'};font-weight:700">${idx+1}º</span>
+        <span style="flex:1;font-size:.86rem;font-weight:600;color:${passes?'var(--text)':'var(--muted)'}">${team}</span>
+        <div style="width:80px;height:5px;background:var(--surface3);border-radius:3px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${passes?'var(--green)':'var(--muted)'};border-radius:3px"></div>
+        </div>
+        <span style="font-size:.72rem;color:var(--muted);font-family:var(--mono);width:32px;text-align:right">${votes}/${totalVoters}</span>
+        ${passes ? '<span style="font-size:.65rem;background:var(--green-dim);color:var(--green);border:1px solid var(--green-mid);padding:2px 6px;border-radius:4px;font-weight:700;white-space:nowrap">✓ passa</span>' : '<span style="font-size:.65rem;color:var(--muted);padding:2px 6px">✗</span>'}
+      </div>`;
+    }).join('');
+
+  el.innerHTML = groupsHTML + `
+    <div style="grid-column:1/-1;margin-top:6px">
+      <div class="sec-label" style="margin-bottom:12px">🏅 Melhores 3ºs — ranking por votos (top 8 passam)</div>
+      <div class="card" style="padding:10px 14px">${best3HTML}</div>
+    </div>`;
 }
 
 // Majority for palpitao top4 — no country can repeat across positions
@@ -965,7 +1042,6 @@ async function exportPDF() {
   btn.disabled = true;
   btn.innerHTML = '<span>⏳</span><span>Gerando PDF...</span>';
 
-  // Fetch all data
   const {data:members}  = await db.from('bolao_members').select('name').order('created_at');
   const {data:brasilAll}= await db.from('bolao_brasil').select('*');
   const {data:gruposAll}= await db.from('bolao_grupos').select('*');
@@ -978,144 +1054,159 @@ async function exportPDF() {
   const timeStr = now.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
   const mems = (members||[]).map(r=>r.name);
 
-  // ── Build palpitao official ──
-  const palpOfficial = majorityPalpitao(palpAll||[]);
+  const palpOfficial  = majorityPalpitao(palpAll||[]);
+  const grpKeys       = Object.keys(GROUPS);
+  const brasilVoters  = new Set((brasilAll||[]).map(r=>r.member_name)).size;
+  const palpVoters    = (palpAll||[]).length;
+  const gruposVoters  = new Set((gruposAll||[]).map(r=>r.member_name)).size;
 
-  // ── Build grupos official ──
-  const grpKeys = Object.keys(GROUPS);
-
-  // ── Build brasil official ──
+  // Brasil official scores
   const brasilOfficial = BRASIL_GAMES.map(g => {
-    const scores = (brasilAll||[]).filter(r=>r.game_id===g.id).map(r=>`${r.score_home}×${r.score_away}`);
+    const scores = (brasilAll||[]).filter(r=>r.game_id===g.id).map(r=>r.score_home+'×'+r.score_away);
     const m = majority(scores);
-    return { ...g, score: m?.winner || '—' };
+    return {opponent:g.opponent, date:g.date, score:m?m.winner:'—'};
   });
 
-  // ── Build mata-mata official ──
+  // Mata-mata
   const mmByFase = {};
   (mmMatches||[]).forEach(m=>{ if(!mmByFase[m.fase]) mmByFase[m.fase]=[]; mmByFase[m.fase].push(m); });
 
-  // ── CSS ──
-  const css = `
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', sans-serif; background: #fff; color: #111; padding: 32px; font-size: 13px; }
-    .header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; padding-bottom: 16px; border-bottom: 3px solid #00b050; }
-    .header-left h1 { font-size: 22px; font-weight: 800; color: #00b050; margin-bottom: 4px; }
-    .header-left p { color: #555; font-size: 12px; }
-    .header-right { text-align: right; font-size: 11px; color: #777; }
-    .header-right strong { display: block; font-size: 13px; color: #111; }
-    .section { margin-bottom: 24px; }
-    .section-title { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #888; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 6px; }
-    .match-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .match-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; text-align: center; }
-    .match-card .teams { font-size: 11px; color: #555; margin-bottom: 4px; }
-    .match-card .score { font-size: 20px; font-weight: 800; color: #00b050; font-family: monospace; }
-    .match-card .date { font-size: 10px; color: #aaa; margin-top: 3px; }
-    .palp-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .palp-item { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 12px; display: flex; align-items: center; gap: 10px; }
-    .palp-item .icon { font-size: 16px; }
-    .palp-item .lbl { font-size: 10px; color: #888; margin-bottom: 2px; }
-    .palp-item .val { font-size: 14px; font-weight: 700; color: #111; }
-    .grp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-    .grp-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; }
-    .grp-card .grp-name { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #888; margin-bottom: 6px; }
-    .grp-card .pos { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11px; }
-    .grp-card .pos .n { width: 14px; font-size: 9px; font-weight: 700; color: #aaa; flex-shrink: 0; }
-    .grp-card .pos .n.p1 { color: #f59e0b; }
-    .grp-card .pos .n.p2 { color: #9ca3af; }
-    .grp-card .pos .n.p3 { color: #cd7f32; }
-    .mm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .mm-item { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .mm-item .team { font-size: 11px; font-weight: 600; }
-    .mm-item .sc { font-size: 16px; font-weight: 800; color: #00b050; font-family: monospace; white-space: nowrap; }
-    .footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid #eee; text-align: center; font-size: 10px; color: #aaa; }
-    .voters { font-size: 10px; color: #aaa; margin-left: auto; }
-    .fase-label { font-size: 10px; font-weight: 700; color: #555; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .05em; }
-  `;
+  // Top 8 thirds
+  const thirdsFreq = {};
+  (gruposAll||[]).forEach(r=>{ if(r.pos_3) thirdsFreq[r.pos_3]=(thirdsFreq[r.pos_3]||0)+1; });
+  const officialThirds = grpKeys.map(grp=>majorityGrupo(gruposAll||[],grp)[2]?.winner).filter(Boolean);
+  const officialThirdsFreq = {};
+  officialThirds.forEach(t=>{ officialThirdsFreq[t]=(thirdsFreq[t]||0); });
+  const top8Thirds = new Set(Object.entries(officialThirdsFreq).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([t])=>t));
+  const posLblGrp = ['1º','2º','3º','4º'];
 
-  // ── Build HTML content ──
-  const brasilVoters = new Set((brasilAll||[]).map(r=>r.member_name)).size;
-  const palpVoters = (palpAll||[]).length;
-  const gruposVoters = new Set((gruposAll||[]).map(r=>r.member_name)).size;
+  // Build group cards HTML (string concat, no template literals)
+  const grpCardsHTML = grpKeys.map(grp => {
+    const positions = majorityGrupo(gruposAll||[], grp);
+    const rows = positions.map((p,i) => {
+      let cls = 'elim';
+      if (i===0) cls='adv1';
+      else if (i===1) cls='adv2';
+      else if (i===2) cls = top8Thirds.has(p&&p.winner) ? 'adv3-yes' : 'adv3-no';
+      return '<div class="pos '+cls+'"><span class="n">'+posLblGrp[i]+'</span><span class="country">'+(p?p.winner:'—')+'</span></div>';
+    }).join('');
+    return '<div class="grp-card"><div class="grp-name">Grupo '+grp+'</div>'+rows+'</div>';
+  }).join('');
 
-  let body = `
-    <div class="header">
-      <div class="header-left">
-        <h1>⚽ Bolão Copa 2026</h1>
-        <p>Time de Engenharia · HSystem · Palpite Oficial</p>
-      </div>
-      <div class="header-right">
-        <strong>Gerado em ${dateStr} às ${timeStr}</strong>
-        Capitão: Dieseri Mello<br>
-        ${mems.length} participantes
-      </div>
-    </div>
+  const css = [
+    '@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap");',
+    '* { box-sizing:border-box; margin:0; padding:0; }',
+    'body { font-family:Inter,sans-serif; background:#fff; color:#111; padding:32px; font-size:13px; }',
+    '.header { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:28px; padding-bottom:16px; border-bottom:3px solid #00b050; }',
+    '.header-left h1 { font-size:22px; font-weight:800; color:#00b050; margin-bottom:4px; }',
+    '.header-left p { color:#555; font-size:12px; }',
+    '.header-right { text-align:right; font-size:11px; color:#777; }',
+    '.header-right strong { display:block; font-size:13px; color:#111; }',
+    '.section { margin-bottom:24px; }',
+    '.section-title { font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:#888; margin-bottom:10px; padding-bottom:5px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:6px; }',
+    '.voters { font-size:10px; color:#aaa; margin-left:auto; }',
+    '.match-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }',
+    '.match-card { border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; text-align:center; }',
+    '.match-card .teams { font-size:11px; color:#555; margin-bottom:4px; }',
+    '.match-card .score { font-size:20px; font-weight:800; color:#00b050; font-family:monospace; }',
+    '.match-card .date { font-size:10px; color:#aaa; margin-top:3px; }',
+    '.palp-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }',
+    '.palp-item { border:1px solid #e5e7eb; border-radius:8px; padding:9px 12px; display:flex; align-items:center; gap:10px; }',
+    '.palp-item .icon { font-size:16px; }',
+    '.palp-item .lbl { font-size:10px; color:#888; margin-bottom:2px; }',
+    '.palp-item .val { font-size:14px; font-weight:700; color:#111; }',
+    '.adv-legend { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px; font-size:10px; }',
+    '.adv-legend .leg { display:flex; align-items:center; gap:4px; }',
+    '.adv-legend .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }',
+    '.grp-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }',
+    '.grp-card { border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; }',
+    '.grp-card .grp-name { font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#888; margin-bottom:6px; }',
+    '.pos { display:flex; align-items:center; gap:5px; padding:3px 4px; border-radius:4px; font-size:11px; margin-bottom:2px; }',
+    '.pos .n { width:16px; font-size:9px; font-weight:700; flex-shrink:0; }',
+    '.adv1 { background:#dcfce7; } .adv1 .n { color:#16a34a; } .adv1 .country { font-weight:700; color:#15803d; }',
+    '.adv2 { background:#dbeafe; } .adv2 .n { color:#2563eb; } .adv2 .country { font-weight:700; color:#1d4ed8; }',
+    '.adv3-yes { background:#fef9c3; } .adv3-yes .n { color:#ca8a04; } .adv3-yes .country { font-weight:700; color:#854d0e; }',
+    '.adv3-no { opacity:.4; } .adv3-no .n { color:#9ca3af; }',
+    '.elim { opacity:.3; } .elim .n { color:#d1d5db; }',
+    '.mm-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }',
+    '.mm-item { border:1px solid #e5e7eb; border-radius:8px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; gap:8px; }',
+    '.mm-item .team { font-size:11px; font-weight:600; }',
+    '.mm-item .sc { font-size:16px; font-weight:800; color:#00b050; font-family:monospace; white-space:nowrap; }',
+    '.fase-label { font-size:10px; font-weight:700; color:#555; margin:12px 0 6px; text-transform:uppercase; letter-spacing:.05em; }',
+    '.footer { margin-top:28px; padding-top:12px; border-top:1px solid #eee; text-align:center; font-size:10px; color:#aaa; }'
+  ].join('\n');
 
-    <div class="section">
-      <div class="section-title">⚽ Jogos do Brasil — Grupo C <span class="voters">${brasilVoters}/${mems.length} votaram</span></div>
-      <div class="match-grid">
-        ${brasilOfficial.map(g=>`
-          <div class="match-card">
-            <div class="teams">Brasil × ${g.opponent}</div>
-            <div class="score">${g.score}</div>
-            <div class="date">${g.date}</div>
-          </div>`).join('')}
-      </div>
-    </div>
+  // Build body parts as array then join
+  const parts = [];
 
-    <div class="section">
-      <div class="section-title">🔮 Palpitão — Top 4 + Artilheiro <span class="voters">${palpVoters}/${mems.length} votaram</span></div>
-      <div class="palp-grid">
-        ${palpOfficial.map(({field:f, winner})=>`
-          <div class="palp-item">
-            <div class="icon">${f.label.split(' ')[0]}</div>
-            <div><div class="lbl">${f.label.replace(/^[^ ]+ /,'')}</div><div class="val">${winner||'—'}</div></div>
-          </div>`).join('')}
-      </div>
-    </div>
+  parts.push(
+    '<div class="header">'
+    +'<div class="header-left"><h1>⚽ Bolão Copa 2026</h1><p>Time de Engenharia · HSystem · Palpite Oficial</p></div>'
+    +'<div class="header-right"><strong>Gerado em '+dateStr+' às '+timeStr+'</strong>Capitão: Dieseri Mello<br>'+mems.length+' participantes</div>'
+    +'</div>'
+  );
 
-    <div class="section">
-      <div class="section-title">📊 Classificação dos Grupos <span class="voters">${gruposVoters}/${mems.length} votaram</span></div>
-      <div class="grp-grid">
-        ${grpKeys.map(grp=>{
-          const positions = majorityGrupo(gruposAll||[], grp);
-          const posLbl=['1º','2º','3º','4º'], posCls=['p1','p2','p3',''];
-          return `<div class="grp-card">
-            <div class="grp-name">Grupo ${grp}</div>
-            ${positions.map((p,i)=>`<div class="pos"><span class="n ${posCls[i]}">${posLbl[i]}</span>${p?p.winner:'—'}</div>`).join('')}
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
+  // Brasil
+  const brasilCards = brasilOfficial.map(g =>
+    '<div class="match-card"><div class="teams">Brasil × '+g.opponent+'</div><div class="score">'+g.score+'</div><div class="date">'+g.date+'</div></div>'
+  ).join('');
+  parts.push(
+    '<div class="section">'
+    +'<div class="section-title">⚽ Jogos do Brasil — Grupo C <span class="voters">'+brasilVoters+'/'+mems.length+' votaram</span></div>'
+    +'<div class="match-grid">'+brasilCards+'</div>'
+    +'</div>'
+  );
+
+  // Palpitão
+  const palpCards = palpOfficial.map(({field:f,winner}) =>
+    '<div class="palp-item"><div class="icon">'+f.label.split(' ')[0]+'</div>'
+    +'<div><div class="lbl">'+f.label.replace(/^[^ ]+ /,'')+'</div><div class="val">'+(winner||'—')+'</div></div></div>'
+  ).join('');
+  parts.push(
+    '<div class="section">'
+    +'<div class="section-title">🔮 Palpitão — Top 4 + Artilheiro <span class="voters">'+palpVoters+'/'+mems.length+' votaram</span></div>'
+    +'<div class="palp-grid">'+palpCards+'</div>'
+    +'</div>'
+  );
+
+  // Grupos
+  parts.push(
+    '<div class="section">'
+    +'<div class="section-title">📊 Classificação dos Grupos <span class="voters">'+gruposVoters+'/'+mems.length+' votaram</span></div>'
+    +'<div class="adv-legend">'
+    +'<div class="leg"><div class="dot" style="background:#16a34a"></div> 1º — Classificado</div>'
+    +'<div class="leg"><div class="dot" style="background:#2563eb"></div> 2º — Classificado</div>'
+    +'<div class="leg"><div class="dot" style="background:#ca8a04"></div> 3º — Top 8 (passa)</div>'
+    +'<div class="leg"><div class="dot" style="background:#d1d5db"></div> 3º / 4º — Eliminado</div>'
+    +'</div>'
+    +'<div class="grp-grid">'+grpCardsHTML+'</div>'
+    +'</div>'
+  );
 
   // Mata-mata
-  const mmFasesComVotos = FASE_ORDER.filter(f=>mmByFase[f]);
-  if (mmFasesComVotos.length) {
+  const mmFases = FASE_ORDER.filter(f=>mmByFase[f]);
+  if (mmFases.length) {
     const mmVoters = new Set((mmPalp||[]).map(r=>r.member_name)).size;
-    body += `<div class="section"><div class="section-title">🏆 Mata-mata <span class="voters">${mmVoters}/${mems.length} votaram</span></div>`;
-    mmFasesComVotos.forEach(fase => {
-      const fMs = mmByFase[fase];
-      body += `<div class="fase-label">${FASE_LABELS[fase]}</div><div class="mm-grid">`;
-      fMs.forEach(m => {
-        const scores = (mmPalp||[]).filter(p=>p.match_id===m.id).map(p=>`${p.score_home}×${p.score_away}`);
+    let mmBody = '<div class="section"><div class="section-title">🏆 Mata-mata <span class="voters">'+mmVoters+'/'+mems.length+' votaram</span></div>';
+    mmFases.forEach(fase => {
+      mmBody += '<div class="fase-label">'+FASE_LABELS[fase]+'</div><div class="mm-grid">';
+      (mmByFase[fase]||[]).forEach(m => {
+        const scores = (mmPalp||[]).filter(p=>p.match_id===m.id).map(p=>p.score_home+'×'+p.score_away);
         const maj = majority(scores);
-        body += `<div class="mm-item">
-          <span class="team">${m.home_team}</span>
-          <span class="sc">${maj?.winner||'—'}</span>
-          <span class="team" style="text-align:right">${m.away_team}</span>
-        </div>`;
+        mmBody += '<div class="mm-item"><span class="team">'+m.home_team+'</span><span class="sc">'+(maj?maj.winner:'—')+'</span><span class="team" style="text-align:right">'+m.away_team+'</span></div>';
       });
-      body += '</div>';
+      mmBody += '</div>';
     });
-    body += '</div>';
+    mmBody += '</div>';
+    parts.push(mmBody);
   }
 
-  body += `<div class="footer">Bolão Copa 2026 · Time de Engenharia HSystem · Gerado automaticamente em ${dateStr} às ${timeStr}</div>`;
+  parts.push('<div class="footer">Bolão Copa 2026 · Time de Engenharia HSystem · Gerado automaticamente em '+dateStr+' às '+timeStr+'</div>');
 
-  // ── Open print window ──
+  const html = '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Palpite Oficial — Engenharia HSystem</title><style>'+css+'</style></head><body>'+parts.join('')+'</body></html>';
+
   const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Palpite Oficial — Engenharia HSystem</title><style>${css}</style></head><body>${body}</body></html>`);
+  win.document.write(html);
   win.document.close();
   win.focus();
   setTimeout(() => { win.print(); }, 600);
